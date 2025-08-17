@@ -28,9 +28,9 @@ def normalize_partner_name(name):
 def fix_special_name_cases(name):
     special_name = "זיידנברגגת אביב לאו"
     # handle forward or reversed forms
-    if special_name[::-1] in name or special_name in name:
-        name = name.replace(special_name[::-1], "ואל ביבא תג גרבנדייז")
-        name = name.replace(special_name, "ואל ביבא תג גרבנדייז")
+    if special_name in name or special_name in name:
+        name = name.replace(special_name,"זיידנברגגת אביב לאו")
+        name = name.replace(special_name, "זיידנברג גת אביב לאו")
     return name
 
 def normalize_hebrew(s):
@@ -151,7 +151,7 @@ for filename in os.listdir(folder_path):
                 partner_tag = ibfn1_tag if ibfn1_tag is not None and (ibfn1_val != "") else ibfn2_tag
 
             # Clean partner name
-            partner_name_clean = clean_name(partner_name_raw[::-1])  # keep your reversal step for RTL
+            partner_name_clean = clean_name(partner_name_raw)  # keep your reversal step for RTL was [::-1]
             partner_name_clean = fix_special_name_cases(partner_name_clean)
             partner_name_clean = normalize_partner_name(partner_name_clean)
 
@@ -268,7 +268,7 @@ else:
     avg = df_all["score"].mean()
     std_dev = df_all["score"].std()
 
-    print_and_record(f"Average score: {target_name[::-1]}: {avg:.2f}")
+    print_and_record(f"Average score: {target_name}: {avg:.2f}")#was [::-1]
     print_and_record(f"Standard deviation: {std_dev:.2f}")
     print_and_record("\nHands with a score less than {thr}:".format(thr=threshold))
     for fname, pid, score in low_hands:
@@ -377,6 +377,61 @@ else:
         print_and_record("\nSuccess rate per strain:")
         for s, val in suit_success.items():
             print_and_record(f"{s}: {val:.2%}")
+
+
+    
+
+
+
+    # PART 4 - Defense Analysis
+    print_and_record("\n\n--- Defense Analysis ---")
+    if df_boards.empty:
+        print_and_record("No board-level data to compute defense stats.")
+    else:
+        dfc = df_boards.dropna(subset=["contract_level"]).copy()
+
+        # determine declarer side from contract string
+        # contract_raw usually like "4SN=", last letter before result is declarer (N/E/S/W)
+        def get_declarer_side(cstr):
+            if not cstr:
+                return None
+            m = re.match(r".*([NESW])", cstr)
+            if not m:
+                return None
+            d = m.group(1)
+            return "NS" if d in ("N", "S") else "EW"
+
+        dfc["declarer_side"] = dfc["contract_raw"].apply(get_declarer_side)
+        dfc["is_defense"] = dfc.apply(lambda r: r["side"] != r["declarer_side"], axis=1)
+
+        # total defense vs all
+        total_boards = len(dfc)
+        defense_boards = dfc["is_defense"].sum()
+        print_and_record(f"Defense frequency: {defense_boards}/{total_boards} ({defense_boards/total_boards:.2%})")
+
+        # defense success = contract set (over_under < 0) when defending
+        df_def = dfc[dfc["is_defense"]]
+        if df_def.empty:
+            print_and_record("No defense boards found.")
+        else:
+            success_rate = (df_def["over_under"] < 0).mean()
+            print_and_record(f"Defense success rate: {success_rate:.2%}")
+
+            # success per strain
+            strain_success = df_def.groupby("strain").apply(lambda x: (x["over_under"] < 0).mean())
+            print_and_record("\nDefense success rate per strain:")
+            for s, val in strain_success.items():
+                print_and_record(f"{s}: {val:.2%}")
+
+            # success per strain+level
+            df_def["strain_level"] = df_def["contract_level"].astype(int).astype(str) + df_def["strain"]
+            sl_success = df_def.groupby("strain_level").apply(lambda x: (x["over_under"] < 0).mean())
+            print_and_record("\nDefense success rate per strain+level:")
+            for sl, val in sl_success.items():
+                print_and_record(f"{sl}: {val:.2%}")
+
+
+
 
     # Write the report to a text file
     safe_name = re.sub(r"[^א-תA-Za-z0-9_\- ]", "", target_name)
