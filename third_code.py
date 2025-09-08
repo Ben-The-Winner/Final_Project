@@ -4,6 +4,8 @@ import pandas as pd
 import os
 import re
 from collections import Counter, defaultdict
+import matplotlib.pyplot as plt
+
 
 target_name = "זיידנברג נצר יעקב"
 folder_path = "/home/ben/Desktop/Final_Project/bridge_data"
@@ -12,8 +14,9 @@ threshold = 60
 all_results = []    # existing pair-level records
 low_hands = []
 
-# New: per-board records for contract/suit analysis
+#per-board records for contract/suit analysis
 board_records = []
+board_records_field = []  # new for all players
 
 def clean_name(name):
     # Keep only Hebrew letters and spaces
@@ -97,6 +100,16 @@ def parse_contract(contract_str):
         "raw": contract_str
     }
 
+def get_declarer_side(cstr):
+    """Determine declarer side from contract string"""
+    if not cstr:
+        return None
+    m = re.match(r".*([NESW])", cstr)
+    if not m:
+        return None
+    d = m.group(1)
+    return "NS" if d in ("N", "S") else "EW"
+
 # Walk all XML files and collect pair-level and board-level info
 for filename in os.listdir(folder_path):
     if not filename.endswith(".xml"):
@@ -109,7 +122,42 @@ for filename in os.listdir(folder_path):
         continue
     root = tree.getroot()
 
-    # We'll need to find every pair where target appears and also note that pair's id so we can match boards
+    # First pass: collect ALL board records for field analysis
+    for board in root.iter('board'):
+        b_id = board.attrib.get('id')
+        for data in board.findall('data'):
+            contract_str_all = data.attrib.get("C") or ""
+            parsed_all = parse_contract(contract_str_all)
+            
+            # Determine side for this data entry
+            dataN = data.attrib.get('N')
+            dataE = data.attrib.get('E')
+            side = None
+            if dataN:
+                side = "NS"
+                pair_id_field = dataN
+            elif dataE:
+                side = "EW"
+                pair_id_field = dataE
+            else:
+                continue
+            
+            # Add declarer side and defense info for field analysis
+            declarer_side = get_declarer_side(contract_str_all)
+            is_defense = side != declarer_side if declarer_side else None
+            
+            board_records_field.append({
+                "file": filename,
+                "board_id": b_id,
+                "pair_id": pair_id_field,
+                "side": side,
+                "contract_raw": contract_str_all,
+                "declarer_side": declarer_side,
+                "is_defense": is_defense,
+                **(parsed_all or {})
+            })
+
+    # Second pass: find target player's pairs and their specific records
     for pair in root.iter('pair'):
         names_raw = pair.find('names').text or ""
         names_norm = normalize_hebrew(names_raw)
@@ -239,6 +287,10 @@ for filename in os.listdir(folder_path):
                         # contract string
                         contract_str = data.attrib.get("C") or ""
                         parsed = parse_contract(contract_str)
+                        
+                        # Add declarer side and defense info
+                        declarer_side = get_declarer_side(contract_str)
+                        is_defense = side != declarer_side if declarer_side else None
 
                         board_records.append({
                             "file": filename,
@@ -248,12 +300,15 @@ for filename in os.listdir(folder_path):
                             "player_pct": player_pct,
                             "board_point": board_point,
                             "contract_raw": contract_str,
+                            "declarer_side": declarer_side,
+                            "is_defense": is_defense,
                             **(parsed or {})
                         })
 
 # === Build DataFrames ===
 df_all = pd.DataFrame(all_results)
 df_boards = pd.DataFrame(board_records)
+df_boards_field = pd.DataFrame(board_records_field)
 
 # === Section outputs & file report ===
 report_lines = []
@@ -311,138 +366,215 @@ else:
 
     report_lines.append(partner_table_html)  # add HTML table directly
 
-
     best = partner_stats.iloc[0]
     print_and_record(f"\nBest Partner:\nName: {best['partner_name']}, Gender: {best['partner_gender']}, Weighted Score: {best['weighted_score']:.2f}")
 
-    # PART 2 - Contract vs Result Analysis
-    print_and_record("\n\n--- Contract vs Result Analysis ---")
-    if df_boards.empty:
-        print_and_record("No board-level contract data found for this player.")
+    # PART 2 - Contract vs Result Analysis (Relative)
+    print_and_record("\n\n--- Contract vs Result Analysis (Relative) ---")
+    if df_boards.empty or df_boards_field.empty:
+        print_and_record("No board-level data available.")
     else:
-        # drop rows where contract parsing failed (None contract_level)
         dfc = df_boards.dropna(subset=["contract_level"]).copy()
+        dff = df_boards_field.dropna(subset=["contract_level"]).copy()
 
-        # Average contract level announced
-        avg_level = dfc["contract_level"].mean()
-        print_and_record(f"Average contract level announced: {avg_level:.2f}")
+        # Average contract level
+        avg_level_player = dfc["contract_level"].mean()
+        avg_level_field = dff["contract_level"].mean()
+        print_and_record(f"Average contract level: Player={avg_level_player:.2f}, Field={avg_level_field:.2f}")
 
-        # Average tricks bid vs average tricks made
-        avg_bid = dfc["tricks_bid"].mean()
-        avg_made = dfc["tricks_made"].mean()
-        print_and_record(f"Average tricks bid: {avg_bid:.2f}")
-        print_and_record(f"Average tricks made: {avg_made:.2f}")
-        print_and_record(f"Average over/under (made - bid): {dfc['over_under'].mean():.2f}")
+        # Tricks bid vs made
+        print_and_record(f"Average tricks bid: Player={dfc['tricks_bid'].mean():.2f}, Field={dff['tricks_bid'].mean():.2f}")
+        print_and_record(f"Average tricks made: Player={dfc['tricks_made'].mean():.2f}, Field={dff['tricks_made'].mean():.2f}")
 
-        # Frequency exact vs down vs over
-        exact_count = (dfc["over_under"] == 0).sum()
-        over_count = (dfc["over_under"] > 0).sum()
-        down_count = (dfc["over_under"] < 0).sum()
-        total_contracts = len(dfc)
-        print_and_record(f"\nTotal contracts parsed: {total_contracts}")
-        print_and_record(f"Exact (made): {exact_count} ({exact_count/total_contracts:.2%})")
-        print_and_record(f"Overtricks: {over_count} ({over_count/total_contracts:.2%})")
-        print_and_record(f"Down (failed): {down_count} ({down_count/total_contracts:.2%})")
+        # Success rates by contract level
+        success_by_level_player = dfc.groupby("contract_level")["success"].mean()
+        success_by_level_field = dff.groupby("contract_level")["success"].mean()
 
-        # Success rate per contract level
-        success_by_level = dfc.groupby("contract_level")["success"].agg(["count", "mean"]).reset_index().sort_values("contract_level")
-        print_and_record("\nSuccess rate per contract level (count, success_rate):")
-        for _, row in success_by_level.iterrows():
-            print_and_record(f"Level {int(row['contract_level'])}: count={int(row['count'])}, success={row['mean']:.2%}")
+        # Merge into a DataFrame for plotting
+        success_df = pd.DataFrame({
+            "Player": success_by_level_player,
+            "Field": success_by_level_field
+        }).fillna(0)
 
-        # Optionally: success per strain+level (e.g., 3NT)
-        dfc["strain_level"] = dfc["strain"] + dfc["contract_level"].astype(int).astype(str)
-        success_by_strain_level = dfc.groupby("strain_level")["success"].agg(["count", "mean"]).reset_index()
-        print_and_record("\nSuccess by strain+level (e.g., S4):")
-        for _, row in success_by_strain_level.iterrows():
-            print_and_record(f"{row['strain_level']}: count={int(row['count'])}, success={row['mean']:.2%}")
+        print_and_record("\nSuccess rate per contract level:")
+        for lvl, row in success_df.iterrows():
+            print_and_record(f"Level {lvl}: Player={row['Player']:.2%}, Field={row['Field']:.2%}")
 
-    # PART 3 - Suit Distribution & Play Frequency
+        # === Visualization ===
+        plt.figure(figsize=(7,5))
+        success_df.plot(kind="bar")
+        plt.ylabel("Success Rate")
+        plt.title("Success Rate per Contract Level (Player vs Field)")
+        plt.xticks(rotation=0)
+        plt.legend(title="")
+        plot_path = "/home/ben/Desktop/Final_Project/plots/contract_levels.png"
+        os.makedirs(os.path.dirname(plot_path), exist_ok=True)
+        plt.savefig(plot_path, bbox_inches="tight")
+        plt.close()
+
+        # Add to HTML
+        report_lines.append(f'<img src="{plot_path}" width="600">')
+
+    # PART 3 - Suit Distribution & Play Frequency (FIXED)
     print_and_record("\n\n--- Suit Distribution & Play Frequency ---")
     if df_boards.empty:
         print_and_record("No board-level data to compute suit stats.")
     else:
         dfc = df_boards.dropna(subset=["strain"]).copy()
+        dff = df_boards_field.dropna(subset=["strain"]).copy()
 
         # Frequency of strains
-        suit_counts = dfc["strain"].value_counts()
-        suit_perc = suit_counts / suit_counts.sum()
-        print_and_record("Suit frequency (counts):")
-        for s, c in suit_counts.items():
-            print_and_record(f"{s}: {c} ({suit_perc[s]:.2%})")
+        suit_counts_player = dfc["strain"].value_counts(normalize=True)
+        suit_counts_field = dff["strain"].value_counts(normalize=True)
 
-        # Preferred strain
-        preferred = suit_counts.idxmax() if not suit_counts.empty else None
-        print_and_record(f"\nPreferred strain: {preferred}")
+        print_and_record("Suit frequency (player vs field):")
+        for suit in ["S","H","D","C","N"]:
+            p = suit_counts_player.get(suit,0)
+            f = suit_counts_field.get(suit,0)
+            print_and_record(f"{suit}: Player={p:.2%}, Field={f:.2%}")
 
-        # Win rate per suit: average player_pct or average success
-        # Here we show both: average percent score and success rate for contracts in that strain
-        suit_avg_pct = dfc.groupby("strain")["player_pct"].mean()
-        suit_success = dfc.groupby("strain")["success"].mean()
-        print_and_record("\nAverage player percent (nss/ews) per strain:")
-        for s, val in suit_avg_pct.items():
-            print_and_record(f"{s}: {val:.2f}")
+        # Plot suit frequency
+        freq_df = pd.DataFrame({"Player": suit_counts_player, "Field": suit_counts_field}).fillna(0)
+        
+        plt.figure(figsize=(10,5))
+        
+        # Subplot 1: Frequency
+        plt.subplot(1, 2, 1)
+        freq_df.plot(kind="bar", ax=plt.gca())
+        plt.title("Suit Distribution (Player vs Field)")
+        plt.ylabel("Frequency")
+        plt.xticks(rotation=0)
+        plt.legend(title="")
 
-        print_and_record("\nSuccess rate per strain:")
-        for s, val in suit_success.items():
-            print_and_record(f"{s}: {val:.2%}")
+        # Win rate per suit
+        suit_success_player = dfc.groupby("strain")["success"].mean()
+        suit_success_field = dff.groupby("strain")["success"].mean()
 
+        succ_df = pd.DataFrame({"Player": suit_success_player, "Field": suit_success_field}).fillna(0)
+        
+        # Subplot 2: Success rate
+        plt.subplot(1, 2, 2)
+        succ_df.plot(kind="bar", ax=plt.gca())
+        plt.title("Success Rate per Suit (Player vs Field)")
+        plt.ylabel("Success Rate")
+        plt.xticks(rotation=0)
+        plt.legend(title="")
 
-    
+        plt.tight_layout()
+        plot_path_suits = "/home/ben/Desktop/Final_Project/plots/suit_analysis.png"
+        plt.savefig(plot_path_suits, bbox_inches="tight")
+        plt.close()
 
+        # Add to HTML
+        report_lines.append(f'<img src="{plot_path_suits}" width="800">')
 
+        print_and_record("\nSuccess rate per suit (player vs field):")
+        for suit in ["S","H","D","C","N"]:
+            p = suit_success_player.get(suit,0)
+            f = suit_success_field.get(suit,0)
+            print_and_record(f"{suit}: Player={p:.2%}, Field={f:.2%}")
 
-    # PART 4 - Defense Analysis
+    # PART 4 - Defense Analysis (ENHANCED WITH FIELD COMPARISON)
     print_and_record("\n\n--- Defense Analysis ---")
     if df_boards.empty:
         print_and_record("No board-level data to compute defense stats.")
     else:
         dfc = df_boards.dropna(subset=["contract_level"]).copy()
+        dff = df_boards_field.dropna(subset=["contract_level"]).copy()
 
-        # determine declarer side from contract string
-        # contract_raw usually like "4SN=", last letter before result is declarer (N/E/S/W)
-        def get_declarer_side(cstr):
-            if not cstr:
-                return None
-            m = re.match(r".*([NESW])", cstr)
-            if not m:
-                return None
-            d = m.group(1)
-            return "NS" if d in ("N", "S") else "EW"
+        # Filter for valid defense records
+        dfc_def = dfc[dfc["is_defense"] == True].copy()
+        dff_def = dff[dff["is_defense"] == True].copy()
 
-        dfc["declarer_side"] = dfc["contract_raw"].apply(get_declarer_side)
-        dfc["is_defense"] = dfc.apply(lambda r: r["side"] != r["declarer_side"], axis=1)
+        # Defense frequency
+        total_boards_player = len(dfc)
+        defense_boards_player = len(dfc_def)
+        total_boards_field = len(dff)
+        defense_boards_field = len(dff_def)
+        
+        defense_freq_player = defense_boards_player / total_boards_player if total_boards_player > 0 else 0
+        defense_freq_field = defense_boards_field / total_boards_field if total_boards_field > 0 else 0
+        
+        print_and_record(f"Defense frequency: Player={defense_freq_player:.2%}, Field={defense_freq_field:.2%}")
 
-        # total defense vs all
-        total_boards = len(dfc)
-        defense_boards = dfc["is_defense"].sum()
-        print_and_record(f"Defense frequency: {defense_boards}/{total_boards} ({defense_boards/total_boards:.2%})")
-
-        # defense success = contract set (over_under < 0) when defending
-        df_def = dfc[dfc["is_defense"]]
-        if df_def.empty:
-            print_and_record("No defense boards found.")
+        if dfc_def.empty:
+            print_and_record("No defense boards found for player.")
         else:
-            success_rate = (df_def["over_under"] < 0).mean()
-            print_and_record(f"Defense success rate: {success_rate:.2%}")
+            # Defense success = contract set (over_under < 0) when defending
+            success_rate_player = (dfc_def["over_under"] < 0).mean()
+            success_rate_field = (dff_def["over_under"] < 0).mean() if not dff_def.empty else 0
+            
+            print_and_record(f"Defense success rate: Player={success_rate_player:.2%}, Field={success_rate_field:.2%}")
 
-            # success per strain
-            strain_success = df_def.groupby("strain").apply(lambda x: (x["over_under"] < 0).mean())
+            # Success per strain
+            strain_success_player = dfc_def.groupby("strain").apply(lambda x: (x["over_under"] < 0).mean())
+            strain_success_field = dff_def.groupby("strain").apply(lambda x: (x["over_under"] < 0).mean()) if not dff_def.empty else pd.Series()
+
             print_and_record("\nDefense success rate per strain:")
-            for s, val in strain_success.items():
-                print_and_record(f"{s}: {val:.2%}")
+            for strain in ["S","H","D","C","N"]:
+                p = strain_success_player.get(strain, 0) if strain in strain_success_player.index else 0
+                f = strain_success_field.get(strain, 0) if strain in strain_success_field.index else 0
+                print_and_record(f"{strain}: Player={p:.2%}, Field={f:.2%}")
 
-            # success per strain+level
-            df_def["strain_level"] = df_def["contract_level"].astype(int).astype(str) + df_def["strain"]
-            sl_success = df_def.groupby("strain_level").apply(lambda x: (x["over_under"] < 0).mean())
-            print_and_record("\nDefense success rate per strain+level:")
-            for sl, val in sl_success.items():
-                print_and_record(f"{sl}: {val:.2%}")
+            # Create visualization for defense analysis
+            plt.figure(figsize=(12, 4))
+            
+            # Plot 1: Overall defense stats
+            plt.subplot(1, 3, 1)
+            categories = ['Defense\nFrequency', 'Defense\nSuccess Rate']
+            player_values = [defense_freq_player, success_rate_player]
+            field_values = [defense_freq_field, success_rate_field]
+            
+            x = np.arange(len(categories))
+            width = 0.35
+            
+            plt.bar(x - width/2, player_values, width, label='Player', alpha=0.8)
+            plt.bar(x + width/2, field_values, width, label='Field', alpha=0.8)
+            plt.ylabel('Rate')
+            plt.title('Defense Overview')
+            plt.xticks(x, categories)
+            plt.legend()
+            plt.ylim(0, 1)
+            
+            # Plot 2: Defense success by strain
+            plt.subplot(1, 3, 2)
+            defense_strain_df = pd.DataFrame({
+                "Player": strain_success_player,
+                "Field": strain_success_field
+            }).fillna(0)
+            
+            if not defense_strain_df.empty:
+                defense_strain_df.plot(kind="bar", ax=plt.gca())
+                plt.title("Defense Success by Strain")
+                plt.ylabel("Success Rate")
+                plt.xticks(rotation=0)
+                plt.legend(title="")
+            
+            # Plot 3: Success per strain+level for player only (field might be too sparse)
+            plt.subplot(1, 3, 3)
+            if not dfc_def.empty:
+                dfc_def["strain_level"] = dfc_def["contract_level"].astype(str) + dfc_def["strain"]
+                sl_success_player = dfc_def.groupby("strain_level").apply(lambda x: (x["over_under"] < 0).mean())
+                
+                if len(sl_success_player) > 0:
+                    sl_success_player.plot(kind="bar", ax=plt.gca())
+                    plt.title("Player Defense Success\nby Contract")
+                    plt.ylabel("Success Rate")
+                    plt.xticks(rotation=45)
+                    
+                    print_and_record("\nDefense success rate per strain+level (Player only):")
+                    for sl, val in sl_success_player.items():
+                        print_and_record(f"{sl}: {val:.2%}")
 
+            plt.tight_layout()
+            plot_path_defense = "/home/ben/Desktop/Final_Project/plots/defense_analysis.png"
+            plt.savefig(plot_path_defense, bbox_inches="tight")
+            plt.close()
 
+            # Add to HTML
+            report_lines.append(f'<img src="{plot_path_defense}" width="900">')
 
-
-   # Write the report to an HTML file
+# Write the report to an HTML file
 safe_name = re.sub(r"[^א-תA-Za-z0-9_\- ]", "", target_name)
 out_fname = f"/home/ben/Desktop/Final_Project/player_stats_{safe_name.replace(' ', '_')}.html"
 
