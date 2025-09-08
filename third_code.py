@@ -298,10 +298,19 @@ else:
     partner_stats = partner_stats.sort_values(by="weighted_score", ascending=False).reset_index(drop=True)
 
     print_and_record("\n--- Partner Statistics (Weighted Ranking) ---")
-    # print subset columns
     cols_show = ["partner_name", "partner_gender", "games_played", "avg_score",
-                 "min_age", "max_age", "min_exp", "max_exp", "min_rank", "max_rank", "weighted_score"]
-    print_and_record(partner_stats[cols_show].to_string(index=False))
+                "min_age", "max_age", "min_exp", "max_exp", "min_rank", "max_rank", "weighted_score"]
+
+    # Save as HTML table instead of plain text
+    partner_table_html = partner_stats[cols_show].to_html(
+        index=False,
+        justify="center",
+        border=1,
+        classes="partner-table"
+    )
+
+    report_lines.append(partner_table_html)  # add HTML table directly
+
 
     best = partner_stats.iloc[0]
     print_and_record(f"\nBest Partner:\nName: {best['partner_name']}, Gender: {best['partner_gender']}, Weighted Score: {best['weighted_score']:.2f}")
@@ -433,10 +442,24 @@ else:
 
 
 
-    # Write the report to a text file
-    safe_name = re.sub(r"[^א-תA-Za-z0-9_\- ]", "", target_name)
-    out_fname = f"/home/ben/Desktop/Final_Project/player_stats_{safe_name.replace(' ', '_')}.txt"
-    with open(out_fname, "w", encoding="utf-8") as f:
-        f.write("\n".join(report_lines))
+   # Write the report to an HTML file
+safe_name = re.sub(r"[^א-תA-Za-z0-9_\- ]", "", target_name)
+out_fname = f"/home/ben/Desktop/Final_Project/player_stats_{safe_name.replace(' ', '_')}.html"
 
-    print(f"\nReport written to {out_fname}")
+# Convert each line into <p> for readability, wrap in <html>/<body>
+html_content = "<html><head><meta charset='utf-8'><title>Player Stats</title></head><body>"
+for line in report_lines:
+    if line.strip().startswith("---"):
+        html_content += f"<h2>{line.strip('- ').strip()}</h2>"
+    else:
+        html_content += f"<p>{line}</p>"
+html_content += "</body></html>"
+
+with open(out_fname, "w", encoding="utf-8") as f:
+    f.write(html_content)
+
+print(f"\nHTML report written to {out_fname}")
+
+# Open automatically in browser
+import webbrowser
+webbrowser.open(f"file://{out_fname}")
