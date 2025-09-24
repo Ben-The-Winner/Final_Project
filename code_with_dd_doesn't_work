@@ -6,6 +6,23 @@ import re
 import matplotlib.pyplot as plt
 from ddstable.ddstable import get_ddstable
 
+def board_to_pbn(board_elem):
+    """
+    Convert a <board> XML element into a PBN string that DDS can read.
+    """
+    dealer_map = {"North": "N", "East": "E", "South": "S", "West": "W"}
+    dealer = dealer_map.get(board_elem.findtext("dealer"), "N")
+
+    def fix_hand(hand):
+        return hand if hand else "."
+
+    north = fix_hand(board_elem.findtext("north"))
+    east  = fix_hand(board_elem.findtext("east"))
+    south = fix_hand(board_elem.findtext("south"))
+    west  = fix_hand(board_elem.findtext("west"))
+
+    return f"{dealer}:{north} {east} {south} {west}"
+
 # === CONFIGURATION ===
 target_name = "זיידנברג נצר יעקב"
 folder_path = "/home/ben/Desktop/Final_Project/bridge_data"
@@ -201,18 +218,21 @@ for filename in os.listdir(folder_path):
                 print(f"Found target player {target_name} in {filename}, pair_id: {target_pair_id}, score: {target_score}")
                 break
 
-    # collect board-level field data
+   # collect board-level field data
     b_id = 0
     for board in root.iter('board'):
         b_id += 1
         deal_elem = board.find('deal')
         deal_text = deal_elem.text if deal_elem is not None else None
-        deal_pbn = parse_deal(deal_text) if deal_text else None
+        
+        # Replace old parse_deal logic with board_to_pbn
+        deal_pbn = board_to_pbn(board)
         
         if deal_pbn:
             pbn_count += 1
             if pbn_count <= 3:
                 print(f"Board {b_id} PBN: {deal_pbn[:100]}...")
+
         
         for data in board.findall('data'):
             contract_str_all = data.attrib.get("C") or ""
@@ -245,14 +265,14 @@ for filename in os.listdir(folder_path):
             
             board_records_field.append(field_record)
 
-    # boards of this pair
+   # boards of this pair
     if target_pair_id:
         b_id = 0
         for board in root.iter('board'):
             b_id += 1
-            deal_elem = board.find('deal')
-            deal_text = deal_elem.text if deal_elem is not None else None
-            deal_pbn = parse_deal(deal_text) if deal_text else None
+            
+            # Use board_to_pbn instead of <deal>
+            deal_pbn = board_to_pbn(board)
             
             for data in board.findall('data'):
                 if data.attrib.get('N') == target_pair_id or data.attrib.get('E') == target_pair_id:
@@ -263,6 +283,7 @@ for filename in os.listdir(folder_path):
                     declarer = parsed["declarer"] if parsed else None
                     declarer_side = get_declarer_side(declarer)
                     is_defense = side != declarer_side if declarer_side else None
+
                     
                     player_record = {
                         "file": filename,
