@@ -163,10 +163,15 @@ def rotate_pbn_to_north(pbn_text):
     rotated_hands = hands[-current_idx:] + hands[:-current_idx]
     return f"N:{rotated_hands[0]} E:{rotated_hands[1]} S:{rotated_hands[2]} W:{rotated_hands[3]}"
 
-def get_dds_tricks(deal_pbn, declarer, strain):
-    """Get double dummy tricks with better error handling and debugging"""
+def get_dds_tricks(deal_pbn, declarer, strain, dds_cache):
+    """Get double dummy tricks with caching"""
     if not deal_pbn or not declarer or not strain:
         return None
+    
+    # Check cache first
+    cache_key = (deal_pbn, declarer, strain)
+    if cache_key in dds_cache:
+        return dds_cache[cache_key]
     
     try:
         pbn = rotate_pbn_to_north(deal_pbn)
@@ -177,38 +182,52 @@ def get_dds_tricks(deal_pbn, declarer, strain):
             
             if declarer in dds_result and strain_key in dds_result[declarer]:
                 tricks = dds_result[declarer][strain_key]
+                dds_cache[cache_key] = tricks
                 return tricks
             else:
+                dds_cache[cache_key] = None
                 return None
         else:
+            dds_cache[cache_key] = None
             return None
     except Exception as e:
+        dds_cache[cache_key] = None
         return None
 
-def get_dds_all_tricks(deal_pbn):
+def get_dds_all_tricks(deal_pbn, dds_cache):
     """Get full DDS table for all declarers and strains"""
     if not deal_pbn:
         return None
+    
+    # Check if we already computed full table for this deal
+    full_cache_key = (deal_pbn, "FULL")
+    if full_cache_key in dds_cache:
+        return dds_cache[full_cache_key]
     
     try:
         pbn = rotate_pbn_to_north(deal_pbn)
         
         if 'N:' in pbn and len(re.findall(r'\.', pbn)) == 12:
             dds_result = get_ddstable(pbn.encode("utf-8"))
+            dds_cache[full_cache_key] = dds_result
             return dds_result
         else:
+            dds_cache[full_cache_key] = None
             return None
     except Exception as e:
+        dds_cache[full_cache_key] = None
         return None
 
-def get_optimal_level(deal_pbn, side):
+def get_optimal_level(deal_pbn, side, dds_cache):
     """Get optimal contract level for the side"""
     if not deal_pbn or not side:
         return None
     
     try:
-        pbn = rotate_pbn_to_north(deal_pbn)
-        dds_result = get_ddstable(pbn.encode("utf-8"))
+        dds_result = get_dds_all_tricks(deal_pbn, dds_cache)
+        if not dds_result:
+            return None
+        
         declarers = ['N', 'S'] if side == "NS" else ['E', 'W']
         strains = ['NT', 'S', 'H', 'D', 'C']
         
@@ -229,8 +248,6 @@ board_records = []
 board_records_field = []
 pbn_count = 0
 dds_success_count = 0
-dds_board_limit = 10  # Limit DDS calculations to first N boards per file
-dds_boards_processed = 0
 
 target_name_norm = normalize_hebrew(target_name)
 
@@ -238,6 +255,10 @@ for filename in os.listdir(folder_path):
     if not filename.endswith(".xml"):
         continue
     filepath = os.path.join(folder_path, filename)
+    
+    # Create a DDS cache for this file
+    dds_cache = {}
+    
     try:
         tree = ET.parse(filepath)
         root = tree.getroot()
@@ -273,9 +294,21 @@ for filename in os.listdir(folder_path):
                 print(f"Found target player {target_name} in {filename}, pair_id: {target_pair_id}, score: {target_score}")
                 break
 
-   # collect board-level field data
+    # Pre-calculate DDS for all unique hands in this file
+    unique_hands = set()
+    for board in root.iter('board'):
+        deal_pbn = board_to_pbn(board)
+        if deal_pbn:
+            unique_hands.add(deal_pbn)
+    
+    print(f"Pre-calculating DDS for {len(unique_hands)} unique hands in {filename}...")
+    for hand_pbn in unique_hands:
+        dds_all = get_dds_all_tricks(hand_pbn, dds_cache)
+        if dds_all:
+            dds_success_count += 1
+    
+    # collect board-level field data
     b_id = 0
-    file_dds_count = 0  # Track DDS calls per file
     for board in root.iter('board'):
         b_id += 1
         deal_pbn = board_to_pbn(board)
@@ -308,20 +341,17 @@ for filename in os.listdir(folder_path):
             if parsed_all:
                 field_record.update(parsed_all)
             
-            # Only run DDS for first N boards per file
-            if parsed_all and declarer and deal_pbn and file_dds_count < dds_board_limit:
-                dds_tricks = get_dds_tricks(deal_pbn, declarer, parsed_all["strain"])
+            # Use cache for DDS lookups
+            if parsed_all and declarer and deal_pbn:
+                dds_tricks = get_dds_tricks(deal_pbn, declarer, parsed_all["strain"], dds_cache)
                 if dds_tricks is not None:
                     field_record["dds_tricks"] = dds_tricks
-                    dds_success_count += 1
-                    file_dds_count += 1
             
             board_records_field.append(field_record)
 
-   # boards of this pair
+    # boards of this pair
     if target_pair_id:
         b_id = 0
-        player_dds_count = 0  # Track DDS calls for player boards
         for board in root.iter('board'):
             b_id += 1
             deal_pbn = board_to_pbn(board)
@@ -353,15 +383,15 @@ for filename in os.listdir(folder_path):
                     if parsed:
                         player_record.update(parsed)
                     
-                    # Only run DDS for first N player boards per file
-                    if parsed and declarer and deal_pbn and player_dds_count < dds_board_limit:
-                        dds_tricks = get_dds_tricks(deal_pbn, declarer, parsed["strain"])
+                    # Use cache for DDS lookups
+                    if parsed and declarer and deal_pbn:
+                        dds_tricks = get_dds_tricks(deal_pbn, declarer, parsed["strain"], dds_cache)
                         if dds_tricks is not None:
                             player_record["dds_tricks"] = dds_tricks
                             dds_success_count += 1
-                            player_dds_count += 1
+                        
                         if not is_defense:
-                            optimal_level = get_optimal_level(deal_pbn, side)
+                            optimal_level = get_optimal_level(deal_pbn, side, dds_cache)
                             if optimal_level is not None:
                                 player_record["optimal_level"] = optimal_level
                     
@@ -451,7 +481,6 @@ else:
 
     # === DECLARER DOUBLE DUMMY DIFFERENCE ===
     print_and_record("\n--- Declarer Double Dummy Difference ---")
-    # Calculate difference between actual tricks made and DDS optimal tricks
     player_declarer_dd = player_declarer.dropna(subset=['dds_tricks', 'tricks_made'])
     field_declarer_dd = field_declarer.dropna(subset=['dds_tricks', 'tricks_made'])
     
@@ -472,7 +501,6 @@ else:
         avg_dd_diff_field = np.nan
         print_and_record("No field declarer DDS data available")
     
-    # DDS optimal is 0 by definition (perfect play)
     avg_dd_diff_dds = 0.0
     
     path = plot_comparison(["Declarer DD Diff"], [avg_dd_diff_player], [avg_dd_diff_field], [avg_dd_diff_dds], 
@@ -481,8 +509,6 @@ else:
 
     # === DEFENDER DOUBLE DUMMY DIFFERENCE ===
     print_and_record("\n--- Defender Double Dummy Difference ---")
-    # For defense, we want to see how many tricks they gave away vs optimal defense
-    # Difference = actual tricks declarer made - DDS tricks (negative is good for defense)
     player_defender_dd = player_defender.dropna(subset=['dds_tricks', 'tricks_made'])
     field_defender_dd = field_defender.dropna(subset=['dds_tricks', 'tricks_made'])
     
@@ -503,7 +529,6 @@ else:
         avg_dd_diff_def_field = np.nan
         print_and_record("No field defender DDS data available")
     
-    # DDS optimal is 0 by definition (perfect defense)
     avg_dd_diff_def_dds = 0.0
     
     path = plot_comparison(["Defender DD Diff"], [avg_dd_diff_def_player], [avg_dd_diff_def_field], [avg_dd_diff_def_dds], 
@@ -512,16 +537,9 @@ else:
 
     # === TRICK LOSING PLAYS - OPENING LEAD ===
     print_and_record("\n--- Trick Losing Plays - Opening Lead ---")
-    # Opening leader is the player to the left of declarer
-    # For each defense board, calculate if opening lead cost a trick
     player_defender_lead = player_defender.dropna(subset=['dds_tricks', 'tricks_made', 'declarer', 'side'])
     field_defender_lead = field_defender.dropna(subset=['dds_tricks', 'tricks_made', 'declarer', 'side'])
     
-    # Opening leader determination:
-    # If declarer is N, opening leader is E
-    # If declarer is E, opening leader is S
-    # If declarer is S, opening leader is W
-    # If declarer is W, opening leader is N
     lead_map = {'N': 'E', 'E': 'S', 'S': 'W', 'W': 'N'}
     
     tlp_lead_count_player = 0
@@ -530,14 +548,12 @@ else:
     for idx, row in player_defender_lead.iterrows():
         opening_leader = lead_map.get(row['declarer'])
         if opening_leader:
-            # Check if player's side includes the opening leader
             player_side = row['side']
             is_opening_leader = (player_side == "NS" and opening_leader in ['N', 'S']) or \
                                (player_side == "EW" and opening_leader in ['E', 'W'])
             
             if is_opening_leader:
                 tlp_lead_total_player += 1
-                # If actual tricks > DDS tricks, defense gave away tricks
                 if row['tricks_made'] > row['dds_tricks']:
                     tlp_lead_count_player += 1
     
@@ -558,7 +574,7 @@ else:
     
     tlp_lead_rate_player = tlp_lead_count_player / tlp_lead_total_player if tlp_lead_total_player > 0 else np.nan
     tlp_lead_rate_field = tlp_lead_count_field / tlp_lead_total_field if tlp_lead_total_field > 0 else np.nan
-    tlp_lead_rate_dds = 0.0  # Perfect play never loses tricks
+    tlp_lead_rate_dds = 0.0
     
     print_and_record(f"Player TLP on opening lead: {tlp_lead_rate_player:.2%} ({tlp_lead_count_player}/{tlp_lead_total_player} boards)")
     print_and_record(f"Field TLP on opening lead: {tlp_lead_rate_field:.2%} ({tlp_lead_count_field}/{tlp_lead_total_field} boards)")
@@ -569,8 +585,6 @@ else:
 
     # === TRICK LOSING PLAYS - AS DEFENDER (excluding opening lead) ===
     print_and_record("\n--- Trick Losing Plays - As Defender (Excluding Opening Lead) ---")
-    # This is essentially the same as defender DD difference but expressed as frequency
-    # A TLP occurs when tricks_made > dds_tricks
     
     tlp_def_count_player = 0
     tlp_def_total_player = len(player_defender_dd)
@@ -594,7 +608,7 @@ else:
         tlp_def_rate_field = np.nan
         print_and_record("No field defender TLP data available")
     
-    tlp_def_rate_dds = 0.0  # Perfect defense never loses tricks
+    tlp_def_rate_dds = 0.0
     
     path = plot_comparison(["Defender TLP"], [tlp_def_rate_player], [tlp_def_rate_field], [tlp_def_rate_dds], 
                           "Trick Losing Plays - As Defender", "tlp_defender.png", "Frequency")
@@ -602,13 +616,6 @@ else:
 
     # === RESULTS WITHOUT PLAY ===
     print_and_record("\n--- Results Without Play (Contract-Only Analysis) ---")
-    # Calculate what the score would be if we only considered the contract bid, not the result
-    # This isolates bidding skill from card play skill
-    
-    # For each board the player played, calculate:
-    # 1. Their actual score (based on tricks made)
-    # 2. The average score for that contract across the field
-    # 3. Compare the two
     
     player_boards_with_contract = df_boards.dropna(subset=['contract_level', 'strain', 'doubled', 'declarer', 
                                                              'tricks_made', 'tricks_bid', 'side'])
@@ -621,7 +628,6 @@ else:
         file_name = player_row['file']
         player_side = player_row['side']
         
-        # Get all results for this board from the field
         board_field_results = df_boards_field[
             (df_boards_field['board_id'] == board_id) & 
             (df_boards_field['file'] == file_name)
@@ -630,10 +636,8 @@ else:
         if board_field_results.empty:
             continue
         
-        # Calculate average result for the player's contract across the field
         player_contract = f"{player_row['contract_level']}{player_row['strain']}{player_row['doubled']}"
         
-        # Find all instances of this contract in the field
         same_contract_field = board_field_results[
             (board_field_results['contract_level'] == player_row['contract_level']) &
             (board_field_results['strain'] == player_row['strain']) &
@@ -641,8 +645,7 @@ else:
             (board_field_results['declarer_side'] == player_row['declarer_side'])
         ].copy()
         
-        if len(same_contract_field) >= 2:  # Need at least 2 results to average
-            # Calculate scores for all instances
+        if len(same_contract_field) >= 2:
             same_contract_field['declarer_vul'] = same_contract_field.apply(
                 lambda r: r['ns_vulnerable'] if r['declarer_side'] == 'NS' else r['ew_vulnerable'], axis=1
             )
@@ -653,17 +656,14 @@ else:
                 axis=1
             )
             
-            # Average score for this contract
             avg_contract_score = same_contract_field['score'].mean()
             
-            # Player's actual score
             player_vul = player_row['ns_vulnerable'] if player_side == 'NS' else player_row['ew_vulnerable']
             player_actual_score = calculate_score(
                 player_row['contract_level'], player_row['strain'], player_row['doubled'],
                 player_vul, player_row['tricks_made'], player_row['tricks_bid']
             )
             
-            # If player is defense, flip the sign
             if player_row['is_defense']:
                 player_actual_score = -player_actual_score
                 avg_contract_score = -avg_contract_score
@@ -674,7 +674,7 @@ else:
     if results_without_play_player:
         avg_result_player = np.mean(results_without_play_player)
         avg_result_field = np.mean(results_without_play_field)
-        avg_result_dds = avg_result_field  # Field average is the baseline
+        avg_result_dds = 0
         
         print_and_record(f"Average result without play: Player={avg_result_player:.0f}, Field={avg_result_field:.0f}")
         print_and_record(f"Based on {len(results_without_play_player)} boards with comparable contracts")
@@ -687,18 +687,14 @@ else:
 
     # === MAKING POST-LEAD MAKEABLE CONTRACTS ===
     print_and_record("\n--- Making Post-Lead Makeable Contracts ---")
-    # How frequently declarer makes the contract when optimal play by both sides after opening lead leads to making
-    # This means: given that DDS says the contract is makeable, did the declarer actually make it?
     
     player_declarer_postlead = player_declarer.dropna(subset=['dds_tricks', 'tricks_made', 'tricks_bid'])
     field_declarer_postlead = field_declarer.dropna(subset=['dds_tricks', 'tricks_made', 'tricks_bid'])
     
-    # Filter for contracts that are makeable by DDS (dds_tricks >= tricks_bid)
     player_makeable = player_declarer_postlead[player_declarer_postlead['dds_tricks'] >= player_declarer_postlead['tricks_bid']]
     field_makeable = field_declarer_postlead[field_declarer_postlead['dds_tricks'] >= field_declarer_postlead['tricks_bid']]
     
     if not player_makeable.empty:
-        # Of the makeable contracts, how many did player actually make?
         player_made_makeable = (player_makeable['tricks_made'] >= player_makeable['tricks_bid']).sum()
         player_total_makeable = len(player_makeable)
         player_rate = player_made_makeable / player_total_makeable if player_total_makeable > 0 else np.nan
@@ -718,7 +714,6 @@ else:
         field_rate = np.nan
         print_and_record("No field data for post-lead makeable contracts")
     
-    # DDS optimal would be 100% (always makes makeable contracts)
     dds_rate = 1.0
     
     if not np.isnan(player_rate):
