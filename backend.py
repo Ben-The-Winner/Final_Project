@@ -444,6 +444,14 @@ def run_analysis_for_player(player_identifier):
 
     print(f"Player boards with DDS data: {dds_count_player}/{len(df_boards)}")
     print(f"Field boards with DDS data: {dds_count_field}/{len(df_boards_field)}")
+    if 'file' not in df_boards.columns:
+        print("Warning: 'file' column missing in df_boards, restoring from board_records")
+        df_boards['file'] = [r.get('file', 'Unknown.xml') for r in board_records]
+
+    df_boards['file'] = df_boards['file'].fillna("Unknown.xml").astype(str)
+    df_boards['year'] = df_boards['file'].str.extract(r'(\d{4})').astype(int)
+
+
 
     # === REPORT ===
     report_lines = []
@@ -495,6 +503,49 @@ def run_analysis_for_player(player_identifier):
         relative_path = os.path.relpath(path, os.path.join(os.path.dirname(__file__), "static"))
         return f'/static/{relative_path}'
 
+    def plot_yearly_trend(df, year_col, value_col, title, filename, ylabel):
+        """Creates a line graph that shows improvement over years"""
+        plt.figure(figsize=(10, 6))
+
+        # Ensure year column is numeric
+        df = df.dropna(subset=[year_col, value_col]).copy()
+        if df.empty:
+            print(f"No yearly data available for {title}")
+            plt.close()
+            return None
+            
+        df[year_col] = df[year_col].astype(int)
+
+        yearly_avg = df.groupby(year_col)[value_col].mean().reset_index()
+
+        if yearly_avg.empty:
+            print(f"No yearly data available for {title}")
+            plt.close()
+            return None
+
+        plt.plot(yearly_avg[year_col], yearly_avg[value_col], marker='o', linewidth=2, 
+                color='#2E86AB', markersize=8, label='Player Performance')
+        
+        # Add value labels on points
+        for _, row in yearly_avg.iterrows():
+            plt.text(row[year_col], row[value_col], f'{row[value_col]:.2f}', 
+                    ha='center', va='bottom', fontsize=9)
+        
+        plt.title(f"{title} Over the Years", fontsize=14, fontweight='bold')
+        plt.xlabel("Year", fontsize=12)
+        plt.ylabel(ylabel, fontsize=12)
+        plt.xticks(yearly_avg[year_col])
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+
+        path = os.path.join(plot_dir, filename)
+        plt.tight_layout()
+        plt.savefig(path, bbox_inches="tight", dpi=300)
+        plt.close()
+        
+        relative_path = os.path.relpath(path, os.path.join(os.path.dirname(__file__), "static"))
+        return f'/static/{relative_path}'
+
     if df_all.empty:
         print(f"Couldn't find {target_name}")
     else:
@@ -514,15 +565,26 @@ def run_analysis_for_player(player_identifier):
         avg_level_field = field_declarer["contract_level"].mean() if not field_declarer.empty and 'contract_level' in field_declarer.columns else np.nan
         avg_level_dds = player_declarer["optimal_level"].mean() if not player_declarer.empty and 'optimal_level' in player_declarer.columns else np.nan
         print_and_record(f"Average contract level: Player={avg_level_player:.2f}, Field={avg_level_field:.2f}, DDS={avg_level_dds:.2f}")
-        path = plot_comparison(["Contract Level"], [avg_level_player], [avg_level_field], [avg_level_dds], "Aggression", "aggression.png", "Avg Level")
-        relative_path = os.path.relpath(path, os.path.join(os.path.dirname(__file__), "static"))
-        report_lines.append(f'<img src="/static/{relative_path}" width="600">')
-
+        
+        path = plot_comparison(["Contract Level"], [avg_level_player], [avg_level_field], [avg_level_dds], 
+                             "Aggression", "aggression.png", "Avg Level")
+        report_lines.append(f'<img src="{path}" width="600">')
+        
+        # Yearly Aggression Trend
+        if 'year' in player_declarer.columns and 'contract_level' in player_declarer.columns:
+            path_year = plot_yearly_trend(
+                player_declarer, 'year', 'contract_level',
+                "Aggression (Average Bidding Level)",
+                "aggression_trend.png",
+                "Avg Contract Level"
+            )
+            if path_year:
+                report_lines.append(f'<img src="{path_year}" width="600">')
 
         # === DECLARER DOUBLE DUMMY DIFFERENCE ===
         print_and_record("\n--- Declarer Double Dummy Difference ---")
-        player_declarer_dd = player_declarer.dropna(subset=['dds_tricks', 'tricks_made'])
-        field_declarer_dd = field_declarer.dropna(subset=['dds_tricks', 'tricks_made'])
+        player_declarer_dd = player_declarer.dropna(subset=['dds_tricks', 'tricks_made']).copy()
+        field_declarer_dd = field_declarer.dropna(subset=['dds_tricks', 'tricks_made']).copy()
         
         if not player_declarer_dd.empty:
             player_declarer_dd['dd_diff'] = player_declarer_dd['tricks_made'] - player_declarer_dd['dds_tricks']
@@ -546,11 +608,22 @@ def run_analysis_for_player(player_identifier):
         path = plot_comparison(["Declarer DD Diff"], [avg_dd_diff_player], [avg_dd_diff_field], [avg_dd_diff_dds], 
                             "Declarer Double Dummy Difference", "declarer_dd_diff.png", "Avg Tricks (Actual - Optimal)")
         report_lines.append(f'<img src="{path}" width="600">')
+        
+        # Yearly Declarer DD Diff Trend
+        if not player_declarer_dd.empty and 'year' in player_declarer_dd.columns:
+            path_year = plot_yearly_trend(
+                player_declarer_dd, 'year', 'dd_diff',
+                "Declarer Play Quality",
+                "declarer_dd_diff_trend.png",
+                "Avg Tricks (Actual - Optimal)"
+            )
+            if path_year:
+                report_lines.append(f'<img src="{path_year}" width="600">')
 
         # === DEFENDER DOUBLE DUMMY DIFFERENCE ===
         print_and_record("\n--- Defender Double Dummy Difference ---")
-        player_defender_dd = player_defender.dropna(subset=['dds_tricks', 'tricks_made'])
-        field_defender_dd = field_defender.dropna(subset=['dds_tricks', 'tricks_made'])
+        player_defender_dd = player_defender.dropna(subset=['dds_tricks', 'tricks_made']).copy()
+        field_defender_dd = field_defender.dropna(subset=['dds_tricks', 'tricks_made']).copy()
         
         if not player_defender_dd.empty:
             player_defender_dd['dd_diff'] = player_defender_dd['tricks_made'] - player_defender_dd['dds_tricks']
@@ -574,17 +647,27 @@ def run_analysis_for_player(player_identifier):
         path = plot_comparison(["Defender DD Diff"], [avg_dd_diff_def_player], [avg_dd_diff_def_field], [avg_dd_diff_def_dds], 
                             "Defender Double Dummy Difference", "defender_dd_diff.png", "Avg Tricks Given Away")
         report_lines.append(f'<img src="{path}" width="600">')
+        
+        # Yearly Defender DD Diff Trend
+        if not player_defender_dd.empty and 'year' in player_defender_dd.columns:
+            path_year = plot_yearly_trend(
+                player_defender_dd, 'year', 'dd_diff',
+                "Defensive Play Quality",
+                "defender_dd_diff_trend.png",
+                "Avg Tricks Given Away"
+            )
+            if path_year:
+                report_lines.append(f'<img src="{path_year}" width="600">')
 
         # === TRICK LOSING PLAYS - OPENING LEAD ===
         print_and_record("\n--- Trick Losing Plays - Opening Lead ---")
-        player_defender_lead = player_defender.dropna(subset=['dds_tricks', 'tricks_made', 'declarer', 'side'])
-        field_defender_lead = field_defender.dropna(subset=['dds_tricks', 'tricks_made', 'declarer', 'side'])
+        player_defender_lead = player_defender.dropna(subset=['dds_tricks', 'tricks_made', 'declarer', 'side']).copy()
+        field_defender_lead = field_defender.dropna(subset=['dds_tricks', 'tricks_made', 'declarer', 'side']).copy()
         
         lead_map = {'N': 'E', 'E': 'S', 'S': 'W', 'W': 'N'}
         
-        tlp_lead_count_player = 0
-        tlp_lead_total_player = 0
-        
+        # Calculate TLP for player
+        tlp_lead_records = []
         for idx, row in player_defender_lead.iterrows():
             opening_leader = lead_map.get(row['declarer'])
             if opening_leader:
@@ -593,10 +676,17 @@ def run_analysis_for_player(player_identifier):
                                 (player_side == "EW" and opening_leader in ['E', 'W'])
                 
                 if is_opening_leader:
-                    tlp_lead_total_player += 1
-                    if row['tricks_made'] > row['dds_tricks']:
-                        tlp_lead_count_player += 1
+                    tlp = 1 if row['tricks_made'] > row['dds_tricks'] else 0
+                    tlp_lead_records.append({
+                        'year': row.get('year'),
+                        'tlp': tlp
+                    })
         
+        df_tlp_lead = pd.DataFrame(tlp_lead_records)
+        tlp_lead_count_player = df_tlp_lead['tlp'].sum() if not df_tlp_lead.empty else 0
+        tlp_lead_total_player = len(df_tlp_lead)
+        
+        # Calculate TLP for field
         tlp_lead_count_field = 0
         tlp_lead_total_field = 0
         
@@ -622,26 +712,34 @@ def run_analysis_for_player(player_identifier):
         path = plot_comparison(["Opening Lead TLP"], [tlp_lead_rate_player], [tlp_lead_rate_field], [tlp_lead_rate_dds], 
                             "Trick Losing Plays - Opening Lead", "tlp_opening_lead.png", "Frequency")
         report_lines.append(f'<img src="{path}" width="600">')
+        
+        # Yearly Opening Lead TLP Trend
+        if not df_tlp_lead.empty and 'year' in df_tlp_lead.columns:
+            path_year = plot_yearly_trend(
+                df_tlp_lead, 'year', 'tlp',
+                "Opening Lead Quality",
+                "tlp_opening_lead_trend.png",
+                "TLP Frequency"
+            )
+            if path_year:
+                report_lines.append(f'<img src="{path_year}" width="600">')
 
         # === TRICK LOSING PLAYS - AS DEFENDER (excluding opening lead) ===
         print_and_record("\n--- Trick Losing Plays - As Defender (Excluding Opening Lead) ---")
         
-        tlp_def_count_player = 0
-        tlp_def_total_player = len(player_defender_dd)
-        
         if not player_defender_dd.empty:
-            tlp_def_count_player = (player_defender_dd['tricks_made'] > player_defender_dd['dds_tricks']).sum()
+            player_defender_dd['tlp'] = (player_defender_dd['tricks_made'] > player_defender_dd['dds_tricks']).astype(int)
+            tlp_def_count_player = player_defender_dd['tlp'].sum()
+            tlp_def_total_player = len(player_defender_dd)
             tlp_def_rate_player = tlp_def_count_player / tlp_def_total_player if tlp_def_total_player > 0 else np.nan
             print_and_record(f"Player TLP as defender: {tlp_def_rate_player:.2%} ({tlp_def_count_player}/{tlp_def_total_player} boards)")
         else:
             tlp_def_rate_player = np.nan
             print_and_record("No player defender TLP data available")
         
-        tlp_def_count_field = 0
-        tlp_def_total_field = len(field_defender_dd)
-        
         if not field_defender_dd.empty:
             tlp_def_count_field = (field_defender_dd['tricks_made'] > field_defender_dd['dds_tricks']).sum()
+            tlp_def_total_field = len(field_defender_dd)
             tlp_def_rate_field = tlp_def_count_field / tlp_def_total_field if tlp_def_total_field > 0 else np.nan
             print_and_record(f"Field TLP as defender: {tlp_def_rate_field:.2%} ({tlp_def_count_field}/{tlp_def_total_field} boards)")
         else:
@@ -653,6 +751,17 @@ def run_analysis_for_player(player_identifier):
         path = plot_comparison(["Defender TLP"], [tlp_def_rate_player], [tlp_def_rate_field], [tlp_def_rate_dds], 
                             "Trick Losing Plays - As Defender", "tlp_defender.png", "Frequency")
         report_lines.append(f'<img src="{path}" width="600">')
+        
+        # Yearly Defender TLP Trend
+        if not player_defender_dd.empty and 'year' in player_defender_dd.columns and 'tlp' in player_defender_dd.columns:
+            path_year = plot_yearly_trend(
+                player_defender_dd, 'year', 'tlp',
+                "Defensive TLP Rate",
+                "tlp_defender_trend.png",
+                "TLP Frequency"
+            )
+            if path_year:
+                report_lines.append(f'<img src="{path_year}" width="600">')
 
         # === RESULTS WITHOUT PLAY ===
         print_and_record("\n--- Results Without Play (Contract-Only Analysis, Cross-IMPs) ---")
@@ -687,9 +796,10 @@ def run_analysis_for_player(player_identifier):
         player_boards_with_contract = df_boards.dropna(subset=[
             'contract_level', 'strain', 'doubled', 'declarer',
             'tricks_made', 'tricks_bid', 'side'
-        ])
+        ]).copy()
 
         cross_imps = []
+        cross_imp_records = []
 
         for idx, player_row in player_boards_with_contract.iterrows():
             board_id = player_row['board_id']
@@ -704,7 +814,7 @@ def run_analysis_for_player(player_identifier):
             if board_field_results.empty:
                 continue
 
-            # Compute “no-play” scores for each field result
+            # Compute "no-play" scores for each field result
             board_field_results['declarer_vul'] = board_field_results.apply(
                 lambda r: r['ns_vulnerable'] if r['declarer_side'] == 'NS' else r['ew_vulnerable'], axis=1
             )
@@ -714,7 +824,7 @@ def run_analysis_for_player(player_identifier):
                 axis=1
             )
 
-            # Player’s own “no-play” score
+            # Player's own "no-play" score
             player_vul = player_row['ns_vulnerable'] if player_side == 'NS' else player_row['ew_vulnerable']
             player_score_no_play = calculate_score(
                 player_row['contract_level'], player_row['strain'], player_row['doubled'],
@@ -737,6 +847,10 @@ def run_analysis_for_player(player_identifier):
 
             cross_imp = imps_sum / (len(scores) - 1)
             cross_imps.append(cross_imp)
+            cross_imp_records.append({
+                'year': player_row.get('year'),
+                'cross_imp': cross_imp
+            })
 
         # === Aggregate and Report ===
         if cross_imps:
@@ -744,10 +858,22 @@ def run_analysis_for_player(player_identifier):
             print_and_record(f"Average Cross-IMPs (Results Without Play): {avg_cross_imp:.2f}")
             print_and_record(f"Based on {len(cross_imps)} comparable boards")
 
-            path = plot_comparison(["Result Without Play"], [avg_cross_imp], [0], [],#no dds optimal chart
+            path = plot_comparison(["Result Without Play"], [avg_cross_imp], [0], [],
                                 "Results Without Play (Contract Quality, Cross-IMPs)",
                                 "results_without_play.png", "Avg IMPs", show_dds = False)
             report_lines.append(f'<img src="{path}" width="600">')
+            
+            # Yearly Results Without Play Trend
+            df_cross_imp = pd.DataFrame(cross_imp_records)
+            if not df_cross_imp.empty and 'year' in df_cross_imp.columns:
+                path_year = plot_yearly_trend(
+                    df_cross_imp, 'year', 'cross_imp',
+                    "Bidding Quality (Results Without Play)",
+                    "results_without_play_trend.png",
+                    "Avg Cross-IMPs"
+                )
+                if path_year:
+                    report_lines.append(f'<img src="{path_year}" width="600">')
         else:
             print_and_record("Insufficient data for Results Without Play (Cross-IMPs) analysis")
 
@@ -755,14 +881,15 @@ def run_analysis_for_player(player_identifier):
         # === MAKING POST-LEAD MAKEABLE CONTRACTS ===
         print_and_record("\n--- Making Post-Lead Makeable Contracts ---")
         
-        player_declarer_postlead = player_declarer.dropna(subset=['dds_tricks', 'tricks_made', 'tricks_bid'])
-        field_declarer_postlead = field_declarer.dropna(subset=['dds_tricks', 'tricks_made', 'tricks_bid'])
+        player_declarer_postlead = player_declarer.dropna(subset=['dds_tricks', 'tricks_made', 'tricks_bid']).copy()
+        field_declarer_postlead = field_declarer.dropna(subset=['dds_tricks', 'tricks_made', 'tricks_bid']).copy()
         
-        player_makeable = player_declarer_postlead[player_declarer_postlead['dds_tricks'] >= player_declarer_postlead['tricks_bid']]
-        field_makeable = field_declarer_postlead[field_declarer_postlead['dds_tricks'] >= field_declarer_postlead['tricks_bid']]
+        player_makeable = player_declarer_postlead[player_declarer_postlead['dds_tricks'] >= player_declarer_postlead['tricks_bid']].copy()
+        field_makeable = field_declarer_postlead[field_declarer_postlead['dds_tricks'] >= field_declarer_postlead['tricks_bid']].copy()
         
         if not player_makeable.empty:
-            player_made_makeable = (player_makeable['tricks_made'] >= player_makeable['tricks_bid']).sum()
+            player_makeable['made'] = (player_makeable['tricks_made'] >= player_makeable['tricks_bid']).astype(int)
+            player_made_makeable = player_makeable['made'].sum()
             player_total_makeable = len(player_makeable)
             player_rate = player_made_makeable / player_total_makeable if player_total_makeable > 0 else np.nan
             
@@ -787,6 +914,17 @@ def run_analysis_for_player(player_identifier):
             path = plot_comparison(["Post-Lead Makeable"], [player_rate], [field_rate], [dds_rate], 
                                 "Making Post-Lead Makeable Contracts", "postlead_makeable.png", "Success Rate")
             report_lines.append(f'<img src="{path}" width="600">')
+            
+            # Yearly Post-Lead Makeable Trend
+            if not player_makeable.empty and 'year' in player_makeable.columns and 'made' in player_makeable.columns:
+                path_year = plot_yearly_trend(
+                    player_makeable, 'year', 'made',
+                    "Making Makeable Contracts",
+                    "postlead_makeable_trend.png",
+                    "Success Rate"
+                )
+                if path_year:
+                    report_lines.append(f'<img src="{path_year}" width="600">')
 
     # === OUTPUT HTML ===
     safe_name = re.sub(r"[^א-תA-Za-z0-9_\- ]", "", target_name or str(target_ibfn))
@@ -856,4 +994,3 @@ def run_analysis_for_player(player_identifier):
 if __name__ == "__main__":
     player_identifier = input("Enter player name or number: ").strip()
     run_analysis_for_player(player_identifier)
-
