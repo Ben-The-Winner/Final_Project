@@ -6,6 +6,17 @@ import re
 import matplotlib.pyplot as plt
 from ddstable.ddstable import get_ddstable
 import bisect
+from pymongo import MongoClient
+from datetime import datetime
+
+# === MONGODB CONNECTION ===
+client = MongoClient("mongodb://localhost:27017/")
+db = client["bridge_stats"]
+players_collection = db["players"]
+
+
+
+
 
 def board_to_pbn(board_elem):
     """
@@ -46,6 +57,16 @@ def run_analysis_for_player(player_identifier):
     Returns the HTML report file path.
     """
 
+    # === CHECK IF PLAYER ALREADY CACHED ===
+    cached = players_collection.find_one(
+        {"$or": [{"ibfn": player_identifier}, {"name": player_identifier}]}
+    )
+
+    if cached:
+        print(f"Using cached data for {player_identifier}")
+        return cached["html_report"]
+
+
     # --- Determine player name or IBFN ---
     if isinstance(player_identifier, int) or (isinstance(player_identifier, str) and player_identifier.isdigit()):
         target_ibfn = str(player_identifier)
@@ -55,6 +76,7 @@ def run_analysis_for_player(player_identifier):
         target_name = player_identifier
 
     target_name_norm = normalize_hebrew(target_name) if target_name else None
+
 
 # === MAIN ANALYSIS LOGIC ===
   
@@ -926,6 +948,10 @@ def run_analysis_for_player(player_identifier):
                 if path_year:
                     report_lines.append(f'<img src="{path_year}" width="600">')
 
+
+    
+
+
     # === OUTPUT HTML ===
     safe_name = re.sub(r"[^א-תA-Za-z0-9_\- ]", "", target_name or str(target_ibfn))
     out_fname = f"/home/ben/Desktop/Final_Project/player_stats_{safe_name.replace(' ', '_')}.html"
@@ -988,6 +1014,32 @@ def run_analysis_for_player(player_identifier):
         f.write(html_content)
 
     print(f"Report written to {out_fname}")
+
+
+    # === SAVE RESULTS TO MONGODB ===
+    result_data = {
+        "ibfn": target_ibfn,
+        "name": target_name,
+        "timestamp": datetime.now().isoformat(),
+        "categories": {
+            "aggression": {
+                "player_avg": float(avg_level_player) if not np.isnan(avg_level_player) else None,
+                "field_avg": float(avg_level_field) if not np.isnan(avg_level_field) else None,
+                "dds_avg": float(avg_level_dds) if not np.isnan(avg_level_dds) else None,
+            },
+            # Add other categories here if you'd like, e.g. declarer_dd_diff, defense_dd_diff, etc.
+        },
+        "html_report": out_fname,
+    }
+
+    # Upsert = update existing or insert new
+    players_collection.update_one(
+        {"ibfn": target_ibfn},
+        {"$set": result_data},
+        upsert=True
+    )
+
+    print(f"Saved analysis for {target_name or target_ibfn} to MongoDB.")
 
     return out_fname
 
